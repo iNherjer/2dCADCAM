@@ -9,7 +9,7 @@ type Props = {
 const providerDefaults = {
   none: "",
   openai: "gpt-5.5",
-  gemini: "gemini-2.5-flash"
+  gemini: "gemini-2.5-pro"
 } as const;
 
 export function AiSettingsPanel({ settings, onChange }: Props) {
@@ -52,7 +52,7 @@ export function AiSettingsPanel({ settings, onChange }: Props) {
             type="text"
             value={settings.model}
             disabled={settings.provider === "none"}
-            placeholder={settings.provider === "gemini" ? "gemini-2.5-flash" : "gpt-5.5"}
+            placeholder={settings.provider === "gemini" ? "gemini-2.5-pro" : "gpt-5.5"}
             onChange={(event) => update({ model: event.target.value })}
           />
         </label>

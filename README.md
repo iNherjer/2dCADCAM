@@ -53,11 +53,13 @@ ChatGPT Pro und die OpenAI API sind getrennte Produkte mit getrennten Abrechnung
 Die GitHub-Pages-App hat ein BYOK-Panel:
 
 - Provider: `OpenAI` oder `Gemini`
-- Modell: z. B. `gpt-5.5` oder `gemini-2.5-flash`
+- Modell: z. B. `gpt-5.5` oder `gemini-2.5-pro`
 - API-Key: wird standardmäßig nur im Speicher der aktuell geöffneten Seite gehalten
 - Optional: für die Browser-Sitzung in `sessionStorage` merken
 
 Im BYOK-Direktmodus geht der Key nicht an unser Backend, sondern direkt aus dem Browser an den gewählten Anbieter. Das ist praktisch zum Testen, aber für Produktionsbetrieb bleibt ein eigenes Backend sicherer, weil Browser-Code und Browser-Erweiterungen grundsätzlich Zugriff auf clientseitige Secrets bekommen können.
+
+Für bemaßte Screenshots ist `gemini-2.5-pro` der empfohlene Gemini-Default. `gemini-2.5-flash` ist schneller und günstiger, übersieht aber bei technischen Zeichnungen eher Feature-Zusammenhänge.
 
 ## MVP-Fähigkeiten
 

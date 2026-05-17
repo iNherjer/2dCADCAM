@@ -1,8 +1,37 @@
 import { calculateBounds } from "../../shared/geometry";
 import type { ClientAiSettings, DrawingAnalysis, GeometryEntity, MachiningFeature, Unit } from "../../shared/schema";
 
-const aiPrompt =
-  "Analysiere diese technische Zeichnung fuer 2.5D-Fraesen. Extrahiere Einheiten, Massstab, 2D-Geometrie, Bohrungen, Konturen, Taschen und Unsicherheiten. Koordinaten sollen in Millimetern im Zeichnungskoordinatensystem liegen. Gib ausschliesslich JSON im vorgegebenen Schema zurueck. Erfinde keine sicheren Masse, wenn sie nicht lesbar sind.";
+const aiPrompt = `
+Analysiere diese technische Zeichnung fuer 2.5D-Fraesen in zwei Schritten:
+1. Lies zuerst alle sichtbaren Masse, Ansichten, Durchmesser, Radien und Hoehen.
+2. Leite daraus eine top-view XY-Geometrie in Millimetern ab.
+
+Wichtige Regeln:
+- Verwende mm, wenn die Zeichnung keine andere Einheit zeigt.
+- Wenn eine Draufsicht bemaßt ist, setze den Ursprung unten links an die Aussenkontur der Draufsicht.
+- Erzeuge fuer Bohrungen und runde Taschen immer circle-Entities und verknuepfe Features ueber geometryEntityIds.
+- Erzeuge fuer eine rechteckige Aussenkontur mit Eckradius eine geschlossene polyline. Runde Ecken duerfen mit mehreren Punkten angenaehert werden.
+- Wenn ein Feature nur aus der Seitenansicht erkennbar ist, notiere es als warning oder uncertainty.
+- Gib keine G-Code-Daten aus.
+- Gib ausschliesslich JSON zurueck.
+
+JSON-Form:
+{
+  "units": "mm" | "inch" | "unknown",
+  "scale": 1,
+  "dimensionReadout": ["kurze Liste gelesener Masse"],
+  "entities": [
+    {"id":"outer","type":"polyline","points":[{"x":20,"y":0}],"closed":true},
+    {"id":"hole-1","type":"circle","center":{"x":20,"y":20},"radius":10}
+  ],
+  "features": [
+    {"id":"outer-profile","type":"profile","label":"Aussenkontur","geometryEntityIds":["outer"],"depthMm":20,"side":"outside","confidence":0.8},
+    {"id":"hole-1-drill","type":"drill","label":"Bohrung Ø20","geometryEntityIds":["hole-1"],"center":{"x":20,"y":20},"diameterMm":20,"depthMm":20,"confidence":0.8}
+  ],
+  "uncertainties": [],
+  "warnings": []
+}
+`.trim();
 
 export async function analyzeWithByokAi(file: File, settings: ClientAiSettings): Promise<DrawingAnalysis> {
   if (!settings.apiKey.trim()) throw new Error("Bitte zuerst einen API-Key fuer die KI-Analyse eingeben.");
@@ -53,7 +82,7 @@ async function callOpenAi(file: File, settings: ClientAiSettings): Promise<unkno
 async function callGemini(file: File, settings: ClientAiSettings): Promise<unknown> {
   const base64 = await fileToBase64(file);
   const mimeType = file.type || inferMimeType(file.name);
-  const model = settings.model || "gemini-2.5-flash";
+  const model = settings.model || "gemini-2.5-pro";
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: "POST",
     headers: {
@@ -72,7 +101,8 @@ async function callGemini(file: File, settings: ClientAiSettings): Promise<unkno
       ],
       generationConfig: {
         responseMimeType: "application/json",
-        responseSchema: geminiResponseSchema
+        responseSchema: geminiResponseSchema,
+        temperature: 0.1
       }
     })
   });
@@ -83,15 +113,14 @@ async function callGemini(file: File, settings: ClientAiSettings): Promise<unkno
 
 function normalizeAiAnalysis(raw: unknown, fileName: string, provider: ClientAiSettings["provider"]): DrawingAnalysis {
   const source = asRecord(raw);
-  const entities = sanitizeEntities(asArray(source.entities));
-  const features = sanitizeFeatures(asArray(source.features));
+  const repaired = sanitizeAndRepairGeometry(source);
   return {
     source: "ai-assisted",
     fileName,
     units: sanitizeUnit(source.units),
     scale: typeof source.scale === "number" && source.scale > 0 ? source.scale : 1,
-    entities,
-    features,
+    entities: repaired.entities,
+    features: repaired.features,
     uncertainties: asArray(source.uncertainties).map((item, index) => {
       const uncertainty = asRecord(item);
       return {
@@ -103,10 +132,17 @@ function normalizeAiAnalysis(raw: unknown, fileName: string, provider: ClientAiS
     }),
     warnings: [
       `BYOK-${provider === "openai" ? "OpenAI" : "Gemini"}-Analyse: Ergebnisse vor Maschinenlauf pruefen.`,
+      ...asArray(source.dimensionReadout).map((item) => `Gelesenes Mass: ${String(item)}`),
       ...asArray(source.warnings).map(String)
     ],
-    bounds: calculateBounds(entities)
+    bounds: calculateBounds(repaired.entities)
   };
+}
+
+function sanitizeAndRepairGeometry(source: Record<string, unknown>): { entities: GeometryEntity[]; features: MachiningFeature[] } {
+  const entities = sanitizeEntities(asArray(source.entities));
+  const features = sanitizeFeatures(asArray(source.features), entities);
+  return { entities, features };
 }
 
 function sanitizeEntities(values: unknown[]): GeometryEntity[] {
@@ -148,13 +184,13 @@ function sanitizeEntities(values: unknown[]): GeometryEntity[] {
   return entities;
 }
 
-function sanitizeFeatures(values: unknown[]): MachiningFeature[] {
+function sanitizeFeatures(values: unknown[], entities: GeometryEntity[]): MachiningFeature[] {
   const features: MachiningFeature[] = [];
   values.forEach((value, index) => {
     const feature = asRecord(value);
     const id = String(feature.id ?? `ai-feature-${index + 1}`);
     const label = String(feature.label ?? feature.type ?? "Feature");
-    const geometryEntityIds = asArray(feature.geometryEntityIds).map(String);
+    const geometryEntityIds = repairGeometryRefs(feature, id, entities);
     const depthMm = Math.max(0.1, number(feature.depthMm, 1));
     const confidence = clamp(number(feature.confidence, 0.5), 0, 1);
 
@@ -170,6 +206,63 @@ function sanitizeFeatures(values: unknown[]): MachiningFeature[] {
     }
   });
   return features;
+}
+
+function repairGeometryRefs(feature: Record<string, unknown>, featureId: string, entities: GeometryEntity[]): string[] {
+  const existing = asArray(feature.geometryEntityIds).map(String).filter((id) => entities.some((entity) => entity.id === id));
+  if (existing.length) return existing;
+
+  const center = point(feature.center);
+  const diameter = number(feature.diameterMm);
+  const radius = number(feature.radiusMm) || diameter / 2;
+  if (center && radius > 0) {
+    const id = `ai-geo-${featureId}`;
+    entities.push({ id, type: "circle", center, radius, layer: String(feature.type ?? "ai") });
+    return [id];
+  }
+
+  const width = number(feature.widthMm);
+  const height = number(feature.heightMm);
+  const cornerRadius = number(feature.cornerRadiusMm);
+  if (width > 0 && height > 0) {
+    const id = `ai-geo-${featureId}`;
+    entities.push({
+      id,
+      type: "polyline",
+      points: roundedRectPoints(width, height, Math.max(0, cornerRadius)),
+      closed: true,
+      layer: String(feature.type ?? "ai")
+    });
+    return [id];
+  }
+
+  return asArray(feature.geometryEntityIds).map(String);
+}
+
+function roundedRectPoints(width: number, height: number, radius: number) {
+  const r = Math.min(radius, width / 2, height / 2);
+  if (r <= 0) {
+    return [
+      { x: 0, y: 0 },
+      { x: width, y: 0 },
+      { x: width, y: height },
+      { x: 0, y: height }
+    ];
+  }
+  const points = [];
+  const corners = [
+    { cx: width - r, cy: r, start: -90, end: 0 },
+    { cx: width - r, cy: height - r, start: 0, end: 90 },
+    { cx: r, cy: height - r, start: 90, end: 180 },
+    { cx: r, cy: r, start: 180, end: 270 }
+  ];
+  for (const corner of corners) {
+    for (let step = 0; step <= 5; step += 1) {
+      const angle = ((corner.start + ((corner.end - corner.start) * step) / 5) * Math.PI) / 180;
+      points.push({ x: corner.cx + Math.cos(angle) * r, y: corner.cy + Math.sin(angle) * r });
+    }
+  }
+  return points;
 }
 
 function extractOpenAiText(payload: unknown): string {
@@ -261,6 +354,7 @@ const drawingAnalysisJsonSchema = {
   properties: {
     units: { enum: ["mm", "inch", "unknown"] },
     scale: { type: "number" },
+    dimensionReadout: { type: "array", items: { type: "string" } },
     entities: { type: "array", items: { type: "object", additionalProperties: true } },
     features: { type: "array", items: { type: "object", additionalProperties: true } },
     uncertainties: { type: "array", items: { type: "object", additionalProperties: true } },
@@ -269,14 +363,72 @@ const drawingAnalysisJsonSchema = {
   required: ["units", "scale", "entities", "features", "uncertainties", "warnings"]
 };
 
+const pointSchema = {
+  type: "OBJECT",
+  properties: {
+    x: { type: "NUMBER" },
+    y: { type: "NUMBER" }
+  }
+};
+
 const geminiResponseSchema = {
   type: "OBJECT",
   properties: {
     units: { type: "STRING" },
     scale: { type: "NUMBER" },
-    entities: { type: "ARRAY", items: { type: "OBJECT" } },
-    features: { type: "ARRAY", items: { type: "OBJECT" } },
-    uncertainties: { type: "ARRAY", items: { type: "OBJECT" } },
+    dimensionReadout: { type: "ARRAY", items: { type: "STRING" } },
+    entities: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" },
+          type: { type: "STRING" },
+          layer: { type: "STRING" },
+          start: pointSchema,
+          end: pointSchema,
+          center: pointSchema,
+          radius: { type: "NUMBER" },
+          startAngleDeg: { type: "NUMBER" },
+          endAngleDeg: { type: "NUMBER" },
+          points: { type: "ARRAY", items: pointSchema },
+          closed: { type: "BOOLEAN" }
+        }
+      }
+    },
+    features: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" },
+          type: { type: "STRING" },
+          label: { type: "STRING" },
+          geometryEntityIds: { type: "ARRAY", items: { type: "STRING" } },
+          center: pointSchema,
+          diameterMm: { type: "NUMBER" },
+          radiusMm: { type: "NUMBER" },
+          widthMm: { type: "NUMBER" },
+          heightMm: { type: "NUMBER" },
+          cornerRadiusMm: { type: "NUMBER" },
+          depthMm: { type: "NUMBER" },
+          side: { type: "STRING" },
+          confidence: { type: "NUMBER" }
+        }
+      }
+    },
+    uncertainties: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          id: { type: "STRING" },
+          severity: { type: "STRING" },
+          message: { type: "STRING" },
+          suggestedAction: { type: "STRING" }
+        }
+      }
+    },
     warnings: { type: "ARRAY", items: { type: "STRING" } }
   },
   required: ["units", "scale", "entities", "features", "uncertainties", "warnings"]
