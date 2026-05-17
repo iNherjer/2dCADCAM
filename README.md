@@ -18,7 +18,7 @@ Für reinen Frontend-Betrieb ohne Backend:
 npm run dev
 ```
 
-Dann funktioniert die DXF-Analyse vollständig lokal im Browser. PDF/Bild benötigt ein Backend, weil ein OpenAI API-Key niemals in einer GitHub-Pages-Seite oder anderem Client-Code liegen darf.
+Dann funktioniert die DXF-Analyse vollständig lokal im Browser. PDF/Bild kann entweder über ein eigenes Backend laufen oder im BYOK-Direktmodus mit einem OpenAI-/Gemini-Key, den der Nutzer in der Oberfläche eingibt.
 
 ## KI-Konfiguration
 
@@ -47,6 +47,17 @@ Wenn später ein separates API-Backend existiert, kann die Action beim Build `VI
 ## API-Key und ChatGPT Pro
 
 ChatGPT Pro und die OpenAI API sind getrennte Produkte mit getrennten Abrechnungen. Ein Pro-Abo gibt dir nicht automatisch API-Guthaben. Einen API-Key erstellst du in der OpenAI Platform unter den API-Key-/Project-Einstellungen und hinterlegst ihn lokal als `OPENAI_API_KEY`.
+
+## Bring your own key
+
+Die GitHub-Pages-App hat ein BYOK-Panel:
+
+- Provider: `OpenAI` oder `Gemini`
+- Modell: z. B. `gpt-5.5` oder `gemini-2.5-flash`
+- API-Key: wird standardmäßig nur im Speicher der aktuell geöffneten Seite gehalten
+- Optional: für die Browser-Sitzung in `sessionStorage` merken
+
+Im BYOK-Direktmodus geht der Key nicht an unser Backend, sondern direkt aus dem Browser an den gewählten Anbieter. Das ist praktisch zum Testen, aber für Produktionsbetrieb bleibt ein eigenes Backend sicherer, weil Browser-Code und Browser-Erweiterungen grundsätzlich Zugriff auf clientseitige Secrets bekommen können.
 
 ## MVP-Fähigkeiten
 

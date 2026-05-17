@@ -1,13 +1,14 @@
 import { buildToolpaths, generateGCode } from "../../shared/cam";
 import { calculateBounds } from "../../shared/geometry";
 import { parseDxf } from "../../shared/dxf";
-import type { AnalysisResult, CamParameters, DrawingAnalysis } from "../../shared/schema";
+import { analyzeWithByokAi } from "./byokAi";
+import type { AnalysisResult, CamParameters, ClientAiSettings, DrawingAnalysis } from "../../shared/schema";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL as string | undefined;
 
-export async function analyzeDrawing(file: File, params: CamParameters, useAi: boolean): Promise<AnalysisResult> {
+export async function analyzeDrawing(file: File, params: CamParameters, useAi: boolean, aiSettings: ClientAiSettings): Promise<AnalysisResult> {
   if (apiBaseUrl) return analyzeViaApi(file, params, useAi, apiBaseUrl);
-  return analyzeLocally(file, params);
+  return analyzeLocally(file, params, useAi, aiSettings);
 }
 
 async function analyzeViaApi(file: File, params: CamParameters, useAi: boolean, baseUrl: string): Promise<AnalysisResult> {
@@ -21,9 +22,14 @@ async function analyzeViaApi(file: File, params: CamParameters, useAi: boolean, 
   return payload;
 }
 
-async function analyzeLocally(file: File, params: CamParameters): Promise<AnalysisResult> {
+async function analyzeLocally(file: File, params: CamParameters, useAi: boolean, aiSettings: ClientAiSettings): Promise<AnalysisResult> {
   const extension = file.name.split(".").pop()?.toLowerCase();
-  const analysis = extension === "dxf" ? parseDxf(await file.text(), file.name) : buildStaticUnstructuredAnalysis(file);
+  const analysis =
+    extension === "dxf"
+      ? parseDxf(await file.text(), file.name)
+      : useAi && aiSettings.provider !== "none"
+        ? await analyzeWithByokAi(file, aiSettings)
+        : buildStaticUnstructuredAnalysis(file);
   const toolpaths = buildToolpaths(analysis, params);
   const gcode = generateGCode(analysis, params, toolpaths);
   return {

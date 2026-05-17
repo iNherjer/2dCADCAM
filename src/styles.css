@@ -291,6 +291,8 @@ h3 {
 }
 
 input[type="number"],
+input[type="text"],
+input[type="password"],
 select {
   width: 100%;
   min-height: 36px;
@@ -318,6 +320,39 @@ small {
 .feature-panel {
   border-top: 1px solid #263746;
   padding: 14px;
+}
+
+.ai-panel {
+  border-top: 1px solid #263746;
+}
+
+.panel-header.small {
+  min-height: 42px;
+  justify-content: flex-start;
+}
+
+.ai-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 14px;
+}
+
+.full {
+  grid-column: 1 / -1;
+}
+
+.key-warning {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid #4d4730;
+  border-radius: 8px;
+  background: #1a1810;
+  color: #f7d88a;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .feature-list {

@@ -148,6 +148,15 @@ export type AnalysisResult = {
   aiUsed: boolean;
 };
 
+export type AiProvider = "none" | "openai" | "gemini";
+
+export type ClientAiSettings = {
+  provider: AiProvider;
+  apiKey: string;
+  model: string;
+  rememberForSession: boolean;
+};
+
 export const defaultCamParameters: CamParameters = {
   toolDiameterMm: 3,
   stockThicknessMm: 6,

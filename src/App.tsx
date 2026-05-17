@@ -5,14 +5,23 @@ import { FeatureList } from "./components/FeatureList";
 import { GCodePanel } from "./components/GCodePanel";
 import { ParameterPanel } from "./components/ParameterPanel";
 import { ThreePreview } from "./components/ThreePreview";
-import { defaultCamParameters, type AnalysisResult, type CamParameters } from "../shared/schema";
+import { AiSettingsPanel } from "./components/AiSettingsPanel";
+import { defaultCamParameters, type AnalysisResult, type CamParameters, type ClientAiSettings } from "../shared/schema";
 import { analyzeDrawing } from "./lib/analyze";
+
+const defaultAiSettings: ClientAiSettings = {
+  provider: "none",
+  apiKey: "",
+  model: "",
+  rememberForSession: false
+};
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
   const [params, setParams] = useState<CamParameters>(defaultCamParameters);
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [useAi, setUseAi] = useState(true);
+  const [aiSettings, setAiSettings] = useState<ClientAiSettings>(loadAiSettings);
   const [isDragging, setDragging] = useState(false);
   const [status, setStatus] = useState<string>("Bereit");
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +36,7 @@ export default function App() {
     setStatus("Analysiere Zeichnung");
     setError(null);
     try {
-      const payload = await analyzeDrawing(selectedFile, params, useAi);
+      const payload = await analyzeDrawing(selectedFile, params, useAi, aiSettings);
       setResult(payload);
       setStatus(payload.aiUsed ? "KI-Analyse und lokale CAM-Berechnung abgeschlossen" : "Lokale Analyse abgeschlossen");
     } catch (caught) {
@@ -84,7 +93,7 @@ export default function App() {
           <FileUp size={30} />
           <div>
             <strong>{file ? file.name : "DXF, PDF oder Bild hier ablegen"}</strong>
-            <span>DXF läuft direkt im Browser; PDF/Bild nutzt KI nur mit eigenem Backend.</span>
+            <span>DXF läuft direkt im Browser; PDF/Bild nutzt optional deinen OpenAI- oder Gemini-Key.</span>
           </div>
           <label className="file-button">
             Datei wählen
@@ -127,6 +136,7 @@ export default function App() {
               <h2>CNC Parameter</h2>
             </div>
             <ParameterPanel params={params} onChange={setParams} onRecalculate={() => analyze()} disabled={!file} />
+            <AiSettingsPanel settings={aiSettings} onChange={setAiSettings} />
             <FeatureList result={result} />
           </aside>
         </section>
@@ -144,4 +154,20 @@ export default function App() {
       </section>
     </main>
   );
+}
+
+function loadAiSettings(): ClientAiSettings {
+  try {
+    const raw = sessionStorage.getItem("cnc-ai-settings");
+    if (!raw) return defaultAiSettings;
+    const parsed = JSON.parse(raw) as Partial<ClientAiSettings>;
+    return {
+      ...defaultAiSettings,
+      ...parsed,
+      provider: parsed.provider === "openai" || parsed.provider === "gemini" ? parsed.provider : "none",
+      rememberForSession: true
+    };
+  } catch {
+    return defaultAiSettings;
+  }
 }
