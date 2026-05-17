@@ -111,7 +111,7 @@ async function callGemini(file: File, settings: ClientAiSettings): Promise<unkno
   return JSON.parse(stripJsonFence(extractGeminiText(await response.json())));
 }
 
-function normalizeAiAnalysis(raw: unknown, fileName: string, provider: ClientAiSettings["provider"]): DrawingAnalysis {
+export function normalizeAiAnalysis(raw: unknown, fileName: string, provider: ClientAiSettings["provider"]): DrawingAnalysis {
   const source = asRecord(raw);
   const repaired = sanitizeAndRepairGeometry(source);
   return {
@@ -142,7 +142,13 @@ function normalizeAiAnalysis(raw: unknown, fileName: string, provider: ClientAiS
 function sanitizeAndRepairGeometry(source: Record<string, unknown>): { entities: GeometryEntity[]; features: MachiningFeature[] } {
   const entities = sanitizeEntities(asArray(source.entities));
   const features = sanitizeFeatures(asArray(source.features), entities);
-  return { entities, features };
+  const dimensionText = [
+    ...asArray(source.dimensionReadout).map(String),
+    ...asArray(source.warnings).map(String),
+    ...features.map((feature) => feature.label)
+  ].join(" | ");
+  addDimensionDerivedGeometry(dimensionText, entities, features);
+  return { entities, features: features.filter((feature) => hasUsableGeometry(feature, entities)) };
 }
 
 function sanitizeEntities(values: unknown[]): GeometryEntity[] {
@@ -237,6 +243,163 @@ function repairGeometryRefs(feature: Record<string, unknown>, featureId: string,
   }
 
   return asArray(feature.geometryEntityIds).map(String);
+}
+
+function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], features: MachiningFeature[]): void {
+  const normalized = normalizeDimensionText(text);
+  const plate = readPlateSize(normalized);
+  const cornerRadius = readRadiusNear(normalized, ["eckenradius", "corner", "aussen"]);
+  const thickness = readNumberNear(normalized, ["flanschdicke", "platte", "dicke"]) ?? 1;
+  const center = plate ? { x: plate.width / 2, y: plate.height / 2 } : undefined;
+
+  if (plate && !entities.some((entity) => entity.id === "derived-outer")) {
+    entities.push({
+      id: "derived-outer",
+      type: "polyline",
+      layer: "derived",
+      points: roundedRectPoints(plate.width, plate.height, cornerRadius ?? 0),
+      closed: true
+    });
+    features.push({
+      id: "derived-outer-profile",
+      type: "profile",
+      label: `Aussenkontur ${plate.width}x${plate.height}${cornerRadius ? ` R${cornerRadius}` : ""}`,
+      geometryEntityIds: ["derived-outer"],
+      depthMm: thickness,
+      side: "outside",
+      confidence: 0.82
+    });
+  }
+
+  const holeDiameter = readPatternDiameter(normalized, /(?:4\s*x|4x|vier)\s*(?:bohrung|bohrungen|holes?)/);
+  if (plate && holeDiameter && !entities.some((entity) => entity.id === "derived-hole-1")) {
+    const inset = inferMountingHoleInset(plate, holeDiameter, cornerRadius);
+    const centers = [
+      { x: inset, y: inset },
+      { x: plate.width - inset, y: inset },
+      { x: plate.width - inset, y: plate.height - inset },
+      { x: inset, y: plate.height - inset }
+    ];
+    centers.forEach((holeCenter, index) => {
+      const id = `derived-hole-${index + 1}`;
+      entities.push({ id, type: "circle", layer: "derived-drill", center: holeCenter, radius: holeDiameter / 2 });
+      features.push({
+        id: `${id}-drill`,
+        type: "drill",
+        label: `Bohrung ${index + 1} Ø${holeDiameter}`,
+        geometryEntityIds: [id],
+        center: holeCenter,
+        diameterMm: holeDiameter,
+        depthMm: thickness,
+        confidence: 0.78
+      });
+    });
+  }
+
+  const bossDiameter = readDiameterNear(normalized, ["aufsatz", "boss", "nabe"]);
+  if (center && bossDiameter && !entities.some((entity) => entity.id === "derived-boss")) {
+    entities.push({ id: "derived-boss", type: "circle", layer: "derived-boss", center, radius: bossDiameter / 2 });
+    features.push({
+      id: "derived-boss-profile",
+      type: "profile",
+      label: `Aufsatz Ø${bossDiameter}`,
+      geometryEntityIds: ["derived-boss"],
+      depthMm: thickness,
+      side: "outside",
+      confidence: 0.72
+    });
+  }
+
+  const centralDiameter = readDiameterNear(normalized, ["zentralbohrung", "zentral", "center", "mitte"]);
+  if (center && centralDiameter && !entities.some((entity) => entity.id === "derived-center")) {
+    entities.push({ id: "derived-center", type: "circle", layer: "derived-pocket", center, radius: centralDiameter / 2 });
+    if (centralDiameter >= 25) {
+      features.push({
+        id: "derived-center-pocket",
+        type: "pocket",
+        label: `Zentral Tasche Ø${centralDiameter}`,
+        geometryEntityIds: ["derived-center"],
+        depthMm: Math.min(thickness, 1),
+        side: "inside",
+        confidence: 0.74
+      });
+    } else {
+      features.push({
+        id: "derived-center-drill",
+        type: "drill",
+        label: `Zentral Bohrung Ø${centralDiameter}`,
+        geometryEntityIds: ["derived-center"],
+        center,
+        diameterMm: centralDiameter,
+        depthMm: thickness,
+        confidence: 0.74
+      });
+    }
+  }
+}
+
+function hasUsableGeometry(feature: MachiningFeature, entities: GeometryEntity[]): boolean {
+  return feature.geometryEntityIds.some((id) => entities.some((entity) => entity.id === id));
+}
+
+function normalizeDimensionText(text: string): string {
+  return text
+    .toLowerCase()
+    .replaceAll("ø", "d")
+    .replaceAll("⌀", "d")
+    .replaceAll("×", "x")
+    .replaceAll(",", ".")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function readPlateSize(text: string): { width: number; height: number } | null {
+  const match = text.match(/(?:gesamt(?:große|grosse|größe)?|aussen|outer|platte|flansch)?[^0-9]{0,20}(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function readPatternDiameter(text: string, labelPattern: RegExp): number | null {
+  const match = text.match(new RegExp(`${labelPattern.source}[^d0-9]{0,24}d\\s*(\\d+(?:\\.\\d+)?)`));
+  if (match) return Number(match[1]);
+  const reversed = text.match(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,24}${labelPattern.source}`));
+  return reversed ? Number(reversed[1]) : null;
+}
+
+function readDiameterNear(text: string, labels: string[]): number | null {
+  for (const label of labels) {
+    const after = text.match(new RegExp(`${label}[^d0-9]{0,24}d\\s*(\\d+(?:\\.\\d+)?)`));
+    if (after) return Number(after[1]);
+    const before = text.match(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,24}${label}`));
+    if (before) return Number(before[1]);
+  }
+  return null;
+}
+
+function readRadiusNear(text: string, labels: string[]): number | null {
+  for (const label of labels) {
+    const after = text.match(new RegExp(`${label}[^r0-9]{0,24}r\\s*(\\d+(?:\\.\\d+)?)`));
+    if (after) return Number(after[1]);
+    const before = text.match(new RegExp(`r\\s*(\\d+(?:\\.\\d+)?)[^|]{0,24}${label}`));
+    if (before) return Number(before[1]);
+  }
+  const plain = text.match(/\br\s*(\d+(?:\.\d+)?)/);
+  return plain ? Number(plain[1]) : null;
+}
+
+function readNumberNear(text: string, labels: string[]): number | null {
+  for (const label of labels) {
+    const match = text.match(new RegExp(`${label}[^0-9]{0,20}(\\d+(?:\\.\\d+)?)`));
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function inferMountingHoleInset(plate: { width: number; height: number }, holeDiameter: number, cornerRadius: number | null): number {
+  if (cornerRadius && cornerRadius >= holeDiameter / 2) return cornerRadius;
+  return Math.max(holeDiameter, Math.min(plate.width, plate.height) / 6);
 }
 
 function roundedRectPoints(width: number, height: number, radius: number) {
