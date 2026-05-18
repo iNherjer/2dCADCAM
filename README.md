@@ -63,6 +63,8 @@ Für bemaßte Screenshots ist `gemini-2.5-pro` der empfohlene Gemini-Default. `g
 
 Die Maßableitung nutzt erkannte Höhen: Bei einer Gesamthöhe von 75 mm und einer Grundplatten-/Flanschhöhe von 20 mm wird eine zentrale Ø35-Senkung/Tasche bis zur Grundplattenoberfläche als 55 mm tief abgeleitet.
 
+Sehr knappe KI-Ausgaben wie `4 x Ø20`, `Ø35` und `Ø60` werden als Lochbild, zentrale Tasche und Boss klassifiziert. Abgerundete Außenkonturen und Kreisfeatures werden im G-Code als echte Bögen/Kreise mit `G2`/`G3` ausgegeben, soweit die Geometrie als Kreis oder Bogen vorliegt.
+
 ## MVP-Fähigkeiten
 
 - Drag-and-drop für DXF, PDF, PNG und JPG

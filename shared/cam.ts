@@ -1,4 +1,4 @@
-import { discretizeEntity, isClosedEntity } from "./geometry";
+import { discretizeEntity, isClosedEntity, pointsAlmostEqual } from "./geometry";
 import type {
   CamParameters,
   DrawingAnalysis,
@@ -50,8 +50,8 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
     };
   }
 
-  const pathPoints = featureEntities.flatMap((entity) => discretizeEntity(entity));
-  if (pathPoints.length === 0) warnings.push("Keine Werkzeugpfadpunkte erzeugt.");
+  const hasPath = featureEntities.some((entity) => entityStartPoint(entity) !== null);
+  if (!hasPath) warnings.push("Keine Werkzeugpfadpunkte erzeugt.");
   if (feature.type !== "engrave" && featureEntities.some((entity) => !isClosedEntity(entity))) {
     warnings.push("Profil/Tasche enthält offene Geometrie.");
   }
@@ -64,7 +64,7 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
     warnings,
     passes: passDepths.map((zMm) => ({
       zMm,
-      moves: pointsToMoves(pathPoints, -zMm, params)
+      moves: entitiesToMoves(featureEntities, -zMm, params)
     }))
   };
 }
@@ -86,6 +86,76 @@ function pointsToMoves(points: Point2[], z: number, params: CamParameters): Tool
     ...rest.map<ToolpathMove>((point) => ({ kind: "linear", to: { ...point, z }, feedMmMin: params.feedRateMmMin })),
     { kind: "rapid", to: { ...points.at(-1)!, z: params.safeZMm } }
   ];
+}
+
+function entitiesToMoves(entities: GeometryEntity[], z: number, params: CamParameters): ToolpathMove[] {
+  const moves: ToolpathMove[] = [];
+  let current: Point2 | null = null;
+
+  for (const entity of entities) {
+    const start = entityStartPoint(entity);
+    if (!start) continue;
+    if (!current || !pointsAlmostEqual(current, start)) {
+      if (current) moves.push({ kind: "rapid", to: { ...current, z: params.safeZMm } });
+      moves.push({ kind: "rapid", to: { ...start, z: params.safeZMm } });
+      moves.push({ kind: "linear", to: { ...start, z }, feedMmMin: params.plungeRateMmMin });
+    }
+    moves.push(...entityCutMoves(entity, z, params));
+    current = entityEndPoint(entity);
+  }
+
+  if (current) moves.push({ kind: "rapid", to: { ...current, z: params.safeZMm } });
+  return moves;
+}
+
+function entityCutMoves(entity: GeometryEntity, z: number, params: CamParameters): ToolpathMove[] {
+  if (entity.type === "circle") {
+    const start = { x: entity.center.x + entity.radius, y: entity.center.y };
+    const opposite = { x: entity.center.x - entity.radius, y: entity.center.y };
+    return [
+      { kind: "arc", to: { ...opposite, z }, centerOffset: { x: -entity.radius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin },
+      { kind: "arc", to: { ...start, z }, centerOffset: { x: entity.radius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin }
+    ];
+  }
+
+  if (entity.type === "arc") {
+    const start = arcPoint(entity, entity.startAngleDeg);
+    const end = arcPoint(entity, entity.endAngleDeg);
+    return [
+      {
+        kind: "arc",
+        to: { ...end, z },
+        centerOffset: { x: entity.center.x - start.x, y: entity.center.y - start.y },
+        clockwise: false,
+        feedMmMin: params.feedRateMmMin
+      }
+    ];
+  }
+
+  const points = discretizeEntity(entity);
+  return points.slice(1).map<ToolpathMove>((point) => ({ kind: "linear", to: { ...point, z }, feedMmMin: params.feedRateMmMin }));
+}
+
+function entityStartPoint(entity: GeometryEntity): Point2 | null {
+  if (entity.type === "line") return entity.start;
+  if (entity.type === "circle") return { x: entity.center.x + entity.radius, y: entity.center.y };
+  if (entity.type === "arc") return arcPoint(entity, entity.startAngleDeg);
+  return entity.points[0] ?? null;
+}
+
+function entityEndPoint(entity: GeometryEntity): Point2 {
+  if (entity.type === "line") return entity.end;
+  if (entity.type === "circle") return { x: entity.center.x + entity.radius, y: entity.center.y };
+  if (entity.type === "arc") return arcPoint(entity, entity.endAngleDeg);
+  return entity.closed ? (entity.points[0] ?? { x: 0, y: 0 }) : (entity.points.at(-1) ?? { x: 0, y: 0 });
+}
+
+function arcPoint(entity: Extract<GeometryEntity, { type: "arc" }>, angleDeg: number): Point2 {
+  const angle = (angleDeg * Math.PI) / 180;
+  return {
+    x: entity.center.x + Math.cos(angle) * entity.radius,
+    y: entity.center.y + Math.sin(angle) * entity.radius
+  };
 }
 
 function operationToGCode(operation: ToolpathOperation, params: CamParameters): string[] {

@@ -33,7 +33,7 @@ describe("BYOK AI normalization", () => {
 
     expect(analysis.entities.map((entity) => entity.id)).toEqual(
       expect.arrayContaining([
-        "derived-outer",
+        "derived-outer-line-bottom",
         "derived-hole-1",
         "derived-hole-2",
         "derived-hole-3",
@@ -55,5 +55,36 @@ describe("BYOK AI normalization", () => {
     expect(toolpaths.length).toBeGreaterThanOrEqual(7);
     expect(gcode.text).toContain("G1 X");
     expect(gcode.text).not.toContain("Keine Werkzeugpfadpunkte erzeugt");
+  });
+
+  it("classifies terse diameter readouts from Gemini into holes, boss, and pocket", () => {
+    const analysis = normalizeAiAnalysis(
+      {
+        units: "mm",
+        scale: 1,
+        dimensionReadout: ["120x120", "R 20 (Ecken)", "4 x Ø 20", "Ø 35", "Ø 60", "Höhe Grundplatte 20", "Gesamthöhe 75"],
+        entities: [],
+        features: [],
+        uncertainties: [],
+        warnings: []
+      },
+      "flange.png",
+      "gemini"
+    );
+
+    expect(analysis.entities.map((entity) => entity.id)).toEqual(
+      expect.arrayContaining(["derived-hole-1", "derived-hole-2", "derived-hole-3", "derived-hole-4", "derived-boss", "derived-center-pocket"])
+    );
+    expect(analysis.features.map((feature) => feature.id)).toEqual(
+      expect.arrayContaining(["derived-hole-1-drill", "derived-hole-2-drill", "derived-hole-3-drill", "derived-hole-4-drill", "derived-boss-profile", "derived-center-pocket"])
+    );
+
+    const toolpaths = buildToolpaths(analysis, { ...defaultCamParameters, cutDepthMm: 1, stepDownMm: 5 });
+    const gcode = generateGCode(analysis, defaultCamParameters, toolpaths);
+    expect(gcode.text).toContain("(Operation: Bohrung 1 Ø20)");
+    expect(gcode.text).toContain("(Operation: Aufsatz Ø60)");
+    expect(gcode.text).toContain("(Operation: Zentral Tasche Ø35)");
+    expect(gcode.text).toContain("G2 X");
+    expect(gcode.text).toContain("G3 X");
   });
 });

@@ -247,6 +247,7 @@ function repairGeometryRefs(feature: Record<string, unknown>, featureId: string,
 
 function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], features: MachiningFeature[]): void {
   const normalized = normalizeDimensionText(text);
+  const hints = readDimensionHints(normalized);
   const plate = readPlateSize(normalized);
   const cornerRadius = readRadiusNear(normalized, ["eckenradius", "corner", "aussen"]);
   const totalHeight = readNumberNear(normalized, ["gesamthohe", "gesamt hohe", "total height"]);
@@ -255,25 +256,19 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
   const center = plate ? { x: plate.width / 2, y: plate.height / 2 } : undefined;
 
   if (plate && !entities.some((entity) => entity.id === "derived-outer")) {
-    entities.push({
-      id: "derived-outer",
-      type: "polyline",
-      layer: "derived",
-      points: roundedRectPoints(plate.width, plate.height, cornerRadius ?? 0),
-      closed: true
-    });
+    const outerEntityIds = addRoundedRectEntities("derived-outer", plate.width, plate.height, cornerRadius ?? 0, entities);
     features.push({
       id: "derived-outer-profile",
       type: "profile",
       label: `Aussenkontur ${plate.width}x${plate.height}${cornerRadius ? ` R${cornerRadius}` : ""}`,
-      geometryEntityIds: ["derived-outer"],
+      geometryEntityIds: outerEntityIds,
       depthMm: thickness,
       side: "outside",
       confidence: 0.82
     });
   }
 
-  const holeDiameter = readPatternDiameter(normalized, /(?:4\s*x|4x|vier)\s*(?:bohrung|bohrungen|holes?)/);
+  const holeDiameter = readPatternDiameter(normalized, /(?:4\s*x|4x|vier)\s*(?:bohrung|bohrungen|holes?)/) ?? hints.mountingHoleDiameter;
   if (plate && holeDiameter && !entities.some((entity) => entity.id === "derived-hole-1")) {
     const inset = inferMountingHoleInset(plate, holeDiameter, cornerRadius);
     const centers = [
@@ -298,7 +293,7 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
     });
   }
 
-  const bossDiameter = readDiameterNear(normalized, ["aufsatz", "boss", "nabe"]);
+  const bossDiameter = readDiameterNear(normalized, ["aufsatz", "absatz", "boss", "nabe"]) ?? hints.bossDiameter;
   if (center && bossDiameter && !entities.some((entity) => entity.id === "derived-boss")) {
     entities.push({ id: "derived-boss", type: "circle", layer: "derived-boss", center, radius: bossDiameter / 2 });
     features.push({
@@ -315,31 +310,91 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
   const centralDiameters = readDiametersNear(normalized, ["zentralbohrung", "zentrale bohrung", "zentraler durchmesser", "zentral", "center", "mitte"]);
   const pocketDiameter = centralDiameters.filter((diameter) => diameter >= 25).sort((a, b) => b - a)[0];
   const throughDiameter = centralDiameters.filter((diameter) => !pocketDiameter || diameter < pocketDiameter).sort((a, b) => a - b)[0];
-  if (center && pocketDiameter && !entities.some((entity) => entity.id === "derived-center-pocket")) {
-    entities.push({ id: "derived-center-pocket", type: "circle", layer: "derived-pocket", center, radius: pocketDiameter / 2 });
+  const derivedPocketDiameter = pocketDiameter ?? hints.centralPocketDiameter;
+  const derivedThroughDiameter = throughDiameter ?? hints.centralDrillDiameter;
+  if (center && derivedPocketDiameter && !entities.some((entity) => entity.id === "derived-center-pocket")) {
+    entities.push({ id: "derived-center-pocket", type: "circle", layer: "derived-pocket", center, radius: derivedPocketDiameter / 2 });
       features.push({
         id: "derived-center-pocket",
         type: "pocket",
-        label: `Zentral Tasche Ø${pocketDiameter}`,
+        label: `Zentral Tasche Ø${derivedPocketDiameter}`,
         geometryEntityIds: ["derived-center-pocket"],
         depthMm: bossHeight,
         side: "inside",
         confidence: 0.74
       });
   }
-  if (center && throughDiameter && !entities.some((entity) => entity.id === "derived-center-drill")) {
-    entities.push({ id: "derived-center-drill", type: "circle", layer: "derived-drill", center, radius: throughDiameter / 2 });
+  if (center && derivedThroughDiameter && !entities.some((entity) => entity.id === "derived-center-drill")) {
+    entities.push({ id: "derived-center-drill", type: "circle", layer: "derived-drill", center, radius: derivedThroughDiameter / 2 });
       features.push({
         id: "derived-center-drill",
         type: "drill",
-        label: `Zentral Bohrung Ø${throughDiameter}`,
+        label: `Zentral Bohrung Ø${derivedThroughDiameter}`,
         geometryEntityIds: ["derived-center-drill"],
         center,
-        diameterMm: throughDiameter,
+        diameterMm: derivedThroughDiameter,
         depthMm: totalHeight ?? thickness,
         confidence: 0.74
       });
   }
+}
+
+function readDimensionHints(text: string): {
+  mountingHoleDiameter: number | null;
+  bossDiameter: number | null;
+  centralPocketDiameter: number | null;
+  centralDrillDiameter: number | null;
+} {
+  const lines = text
+    .split("|")
+    .map((line) => line.replace(/gelesenes mass:\s*/g, "").trim())
+    .filter(Boolean);
+
+  let mountingHoleDiameter: number | null = null;
+  let bossDiameter: number | null = null;
+  let centralPocketDiameter: number | null = null;
+  let centralDrillDiameter: number | null = null;
+  const unlabeled: number[] = [];
+
+  for (const line of lines) {
+    const diameters = readDiameters(line);
+    if (!diameters.length) continue;
+
+    if (/\b(?:4\s*x|4x|vier)\b/.test(line)) {
+      mountingHoleDiameter = diameters[0];
+      continue;
+    }
+
+    if (/\b(?:aufsatz|absatz|boss|nabe)\b/.test(line)) {
+      bossDiameter = Math.max(...diameters);
+      continue;
+    }
+
+    if (/\b(?:zentraler durchmesser|senkung|tasche|pocket)\b/.test(line)) {
+      centralPocketDiameter = Math.max(...diameters);
+      continue;
+    }
+
+    if (/\b(?:zentrale bohrung|zentralbohrung|durchgang)\b/.test(line) && !/\b(?:widerspruch|widerspruchliche|annahme)\b/.test(line)) {
+      centralDrillDiameter = Math.min(...diameters);
+      continue;
+    }
+
+    if (/^d\s*\d+(?:\.\d+)?$/.test(line) || /^mass:\s*d\s*\d+(?:\.\d+)?$/.test(line)) {
+      unlabeled.push(...diameters);
+    }
+  }
+
+  const uniqueUnlabeled = Array.from(new Set(unlabeled)).sort((a, b) => b - a);
+  if (!bossDiameter && uniqueUnlabeled.length) bossDiameter = uniqueUnlabeled[0];
+  if (!centralPocketDiameter) {
+    centralPocketDiameter = uniqueUnlabeled.find((diameter) => diameter !== bossDiameter && diameter !== mountingHoleDiameter && diameter >= 25) ?? null;
+  }
+  if (!centralDrillDiameter) {
+    centralDrillDiameter = uniqueUnlabeled.find((diameter) => diameter !== bossDiameter && diameter !== centralPocketDiameter && diameter !== mountingHoleDiameter) ?? null;
+  }
+
+  return { mountingHoleDiameter, bossDiameter, centralPocketDiameter, centralDrillDiameter };
 }
 
 function hasUsableGeometry(feature: MachiningFeature, entities: GeometryEntity[]): boolean {
@@ -385,6 +440,12 @@ function readDiametersNear(text: string, labels: string[]): number[] {
     for (const match of beforeMatches) diameters.push(Number(match[1]));
   }
   return Array.from(new Set(diameters.filter((diameter) => diameter > 0)));
+}
+
+function readDiameters(text: string): number[] {
+  return Array.from(text.matchAll(/\bd\s*(\d+(?:\.\d+)?)/g))
+    .map((match) => Number(match[1]))
+    .filter((diameter) => diameter > 0);
 }
 
 function readRadiusNear(text: string, labels: string[]): number | null {
@@ -435,6 +496,33 @@ function roundedRectPoints(width: number, height: number, radius: number) {
     }
   }
   return points;
+}
+
+function addRoundedRectEntities(idPrefix: string, width: number, height: number, radius: number, entities: GeometryEntity[]): string[] {
+  const r = Math.min(radius, width / 2, height / 2);
+  if (r <= 0) {
+    entities.push({
+      id: idPrefix,
+      type: "polyline",
+      layer: "derived",
+      points: roundedRectPoints(width, height, 0),
+      closed: true
+    });
+    return [idPrefix];
+  }
+
+  const items: GeometryEntity[] = [
+    { id: `${idPrefix}-line-bottom`, type: "line", layer: "derived", start: { x: r, y: 0 }, end: { x: width - r, y: 0 } },
+    { id: `${idPrefix}-arc-bottom-right`, type: "arc", layer: "derived", center: { x: width - r, y: r }, radius: r, startAngleDeg: -90, endAngleDeg: 0 },
+    { id: `${idPrefix}-line-right`, type: "line", layer: "derived", start: { x: width, y: r }, end: { x: width, y: height - r } },
+    { id: `${idPrefix}-arc-top-right`, type: "arc", layer: "derived", center: { x: width - r, y: height - r }, radius: r, startAngleDeg: 0, endAngleDeg: 90 },
+    { id: `${idPrefix}-line-top`, type: "line", layer: "derived", start: { x: width - r, y: height }, end: { x: r, y: height } },
+    { id: `${idPrefix}-arc-top-left`, type: "arc", layer: "derived", center: { x: r, y: height - r }, radius: r, startAngleDeg: 90, endAngleDeg: 180 },
+    { id: `${idPrefix}-line-left`, type: "line", layer: "derived", start: { x: 0, y: height - r }, end: { x: 0, y: r } },
+    { id: `${idPrefix}-arc-bottom-left`, type: "arc", layer: "derived", center: { x: r, y: r }, radius: r, startAngleDeg: 180, endAngleDeg: 270 }
+  ];
+  entities.push(...items);
+  return items.map((item) => item.id);
 }
 
 function extractOpenAiText(payload: unknown): string {
