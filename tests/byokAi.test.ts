@@ -44,7 +44,7 @@ describe("BYOK AI normalization", () => {
       ])
     );
     expect(analysis.features.map((feature) => feature.id)).toEqual(
-      expect.arrayContaining(["derived-outer-profile", "derived-hole-1-drill", "derived-boss-profile", "derived-center-pocket", "derived-center-drill"])
+      expect.arrayContaining(["derived-outer-profile", "derived-hole-1-drill", "derived-top-clearance", "derived-center-pocket", "derived-center-drill"])
     );
     expect(analysis.features.every((feature) => feature.geometryEntityIds.length > 0)).toBe(true);
     expect(analysis.features.find((feature) => feature.id === "derived-center-pocket")?.depthMm).toBe(55);
@@ -76,15 +76,57 @@ describe("BYOK AI normalization", () => {
       expect.arrayContaining(["derived-hole-1", "derived-hole-2", "derived-hole-3", "derived-hole-4", "derived-boss", "derived-center-pocket"])
     );
     expect(analysis.features.map((feature) => feature.id)).toEqual(
-      expect.arrayContaining(["derived-hole-1-drill", "derived-hole-2-drill", "derived-hole-3-drill", "derived-hole-4-drill", "derived-boss-profile", "derived-center-pocket"])
+      expect.arrayContaining(["derived-hole-1-drill", "derived-hole-2-drill", "derived-hole-3-drill", "derived-hole-4-drill", "derived-top-clearance", "derived-center-pocket"])
     );
 
     const toolpaths = buildToolpaths(analysis, { ...defaultCamParameters, cutDepthMm: 1, stepDownMm: 5 });
     const gcode = generateGCode(analysis, defaultCamParameters, toolpaths);
     expect(gcode.text).toContain("(Operation: Bohrung 1 Ø20)");
-    expect(gcode.text).toContain("(Operation: Aufsatz Ø60)");
+    expect(gcode.text).toContain("(Operation: Freiraeumen um Aufsatz Ø60)");
     expect(gcode.text).toContain("(Operation: Zentral Tasche Ø35)");
     expect(gcode.text).toContain("G2 X");
     expect(gcode.text).toContain("G3 X");
+  });
+
+  it("repairs English Gemini readouts for base height, central counterbore, and through-hole", () => {
+    const analysis = normalizeAiAnalysis(
+      {
+        units: "mm",
+        scale: 1,
+        dimensionReadout: [
+          "Overall size 120x120",
+          "Base height 20",
+          "Total height 75",
+          "Outer corner radius R20",
+          "4x corner holes Ø20",
+          "Central boss Ø60",
+          "Central pocket/counterbore Ø35",
+          "Central through-hole Ø20"
+        ],
+        entities: [],
+        features: [],
+        uncertainties: [
+          {
+            id: "missing-counterbore-depth",
+            severity: "warning",
+            message: "The depth of the central Ø35mm feature is not specified."
+          }
+        ],
+        warnings: []
+      },
+      "flange.png",
+      "gemini"
+    );
+
+    expect(analysis.features.find((feature) => feature.id === "derived-outer-profile")?.depthMm).toBe(20);
+    expect(analysis.features.find((feature) => feature.id === "derived-top-clearance")?.depthMm).toBe(55);
+    expect(analysis.features.find((feature) => feature.id === "derived-center-pocket")?.depthMm).toBe(55);
+    expect(analysis.features.find((feature) => feature.id === "derived-center-drill")?.depthMm).toBe(75);
+
+    const gcode = generateGCode(analysis, { ...defaultCamParameters, stepDownMm: 10 }, buildToolpaths(analysis, { ...defaultCamParameters, stepDownMm: 10 }));
+    expect(gcode.text).toContain("(Operation: Freiraeumen um Aufsatz Ø60)");
+    expect(gcode.text).toContain("(Operation: Zentral Tasche Ø35)");
+    expect(gcode.text).toContain("(Operation: Zentral Bohrung Ø20)");
+    expect(gcode.text).not.toContain("Profil/Tasche enthält offene Geometrie");
   });
 });

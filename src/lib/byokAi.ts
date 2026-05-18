@@ -11,6 +11,8 @@ Wichtige Regeln:
 - Wenn eine Draufsicht bemaßt ist, setze den Ursprung unten links an die Aussenkontur der Draufsicht.
 - Erzeuge fuer Bohrungen und runde Taschen immer circle-Entities und verknuepfe Features ueber geometryEntityIds.
 - Erzeuge fuer eine rechteckige Aussenkontur mit Eckradius eine geschlossene polyline. Runde Ecken duerfen mit mehreren Punkten angenaehert werden.
+- Interpretiere "base height", "flange height", "Grundplattenhoehe" oder "Flanschhoehe" als Dicke der Grundplatte.
+- Wenn eine zentrale Ø35 Tasche/Senkung in der Draufsicht sichtbar ist und die Seitenansicht eine Ø20 Durchgangsbohrung durch einen Aufsatz zeigt, lasse Ø35 nicht weg. Falls keine Tiefe explizit steht, setze die Tiefe vorsichtig auf Aufsatzhoehe = Gesamthoehe minus Grundplattenhoehe und markiere diese Tiefe als abgeleitet.
 - Wenn ein Feature nur aus der Seitenansicht erkennbar ist, notiere es als warning oder uncertainty.
 - Gib keine G-Code-Daten aus.
 - Gib ausschliesslich JSON zurueck.
@@ -250,13 +252,27 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
   const hints = readDimensionHints(normalized);
   const plate = readPlateSize(normalized);
   const cornerRadius = readRadiusNear(normalized, ["eckenradius", "corner", "aussen"]);
-  const totalHeight = readNumberNear(normalized, ["gesamthohe", "gesamt hohe", "total height"]);
-  const thickness = readNumberNear(normalized, ["flanschdicke", "flanschhohe", "grundplatte", "platte", "dicke"]) ?? 1;
+  const totalHeight = readNumberNear(normalized, ["gesamthohe", "gesamt hohe", "total height", "overall height"]);
+  const thickness =
+    readNumberNear(normalized, [
+      "flanschdicke",
+      "flanschhohe",
+      "flange thickness",
+      "flange height",
+      "grundplattendicke",
+      "grundplattenhohe",
+      "grundplatte",
+      "base thickness",
+      "base height",
+      "platte",
+      "dicke"
+    ]) ?? 1;
   const bossHeight = totalHeight && thickness ? Math.max(0.1, totalHeight - thickness) : thickness;
   const center = plate ? { x: plate.width / 2, y: plate.height / 2 } : undefined;
 
   if (plate && !entities.some((entity) => entity.id === "derived-outer")) {
     const outerEntityIds = addRoundedRectEntities("derived-outer", plate.width, plate.height, cornerRadius ?? 0, entities);
+    removeSimilarFeatures(features, "outer");
     features.push({
       id: "derived-outer-profile",
       type: "profile",
@@ -277,6 +293,7 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
       { x: plate.width - inset, y: plate.height - inset },
       { x: inset, y: plate.height - inset }
     ];
+    removeSimilarFeatures(features, "mounting-holes");
     centers.forEach((holeCenter, index) => {
       const id = `derived-hole-${index + 1}`;
       entities.push({ id, type: "circle", layer: "derived-drill", center: holeCenter, radius: holeDiameter / 2 });
@@ -296,46 +313,81 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
   const bossDiameter = readDiameterNear(normalized, ["aufsatz", "absatz", "boss", "nabe"]) ?? hints.bossDiameter;
   if (center && bossDiameter && !entities.some((entity) => entity.id === "derived-boss")) {
     entities.push({ id: "derived-boss", type: "circle", layer: "derived-boss", center, radius: bossDiameter / 2 });
-    features.push({
-      id: "derived-boss-profile",
-      type: "profile",
-      label: `Aufsatz Ø${bossDiameter}`,
-      geometryEntityIds: ["derived-boss"],
-      depthMm: bossHeight,
-      side: "outside",
-      confidence: 0.72
-    });
+    removeSimilarFeatures(features, "boss-profile");
+    const outerIds = entities.filter((entity) => entity.id.startsWith("derived-outer")).map((entity) => entity.id);
+    if (outerIds.length) {
+      features.push({
+        id: "derived-top-clearance",
+        type: "pocket",
+        label: `Freiraeumen um Aufsatz Ø${bossDiameter}`,
+        geometryEntityIds: [...outerIds, "derived-boss"],
+        depthMm: bossHeight,
+        side: "inside",
+        confidence: 0.68
+      });
+    }
   }
 
-  const centralDiameters = readDiametersNear(normalized, ["zentralbohrung", "zentrale bohrung", "zentraler durchmesser", "zentral", "center", "mitte"]);
-  const pocketDiameter = centralDiameters.filter((diameter) => diameter >= 25).sort((a, b) => b - a)[0];
+  if (center && bossDiameter && entities.some((entity) => entity.id === "derived-boss") && !features.some((feature) => feature.id === "derived-top-clearance")) {
+    removeSimilarFeatures(features, "boss-profile");
+    const outerIds = entities.filter((entity) => entity.id.startsWith("derived-outer")).map((entity) => entity.id);
+    if (outerIds.length) {
+      features.push({
+        id: "derived-top-clearance",
+        type: "pocket",
+        label: `Freiraeumen um Aufsatz Ø${bossDiameter}`,
+        geometryEntityIds: [...outerIds, "derived-boss"],
+        depthMm: bossHeight,
+        side: "inside",
+        confidence: 0.68
+      });
+    }
+  }
+
+  const centralDiameters = readDiametersNear(normalized, [
+    "zentralbohrung",
+    "zentrale bohrung",
+    "zentraler durchmesser",
+    "zentral",
+    "central",
+    "center",
+    "centre",
+    "mitte",
+    "through-hole",
+    "through hole",
+    "counterbore",
+    "pocket"
+  ]);
+  const pocketDiameter = centralDiameters.filter((diameter) => diameter >= 25 && diameter !== bossDiameter).sort((a, b) => b - a)[0];
   const throughDiameter = centralDiameters.filter((diameter) => !pocketDiameter || diameter < pocketDiameter).sort((a, b) => a - b)[0];
   const derivedPocketDiameter = pocketDiameter ?? hints.centralPocketDiameter;
   const derivedThroughDiameter = throughDiameter ?? hints.centralDrillDiameter;
   if (center && derivedPocketDiameter && !entities.some((entity) => entity.id === "derived-center-pocket")) {
     entities.push({ id: "derived-center-pocket", type: "circle", layer: "derived-pocket", center, radius: derivedPocketDiameter / 2 });
-      features.push({
-        id: "derived-center-pocket",
-        type: "pocket",
-        label: `Zentral Tasche Ø${derivedPocketDiameter}`,
-        geometryEntityIds: ["derived-center-pocket"],
-        depthMm: bossHeight,
-        side: "inside",
-        confidence: 0.74
-      });
+    removeSimilarFeatures(features, "center-pocket");
+    features.push({
+      id: "derived-center-pocket",
+      type: "pocket",
+      label: `Zentral Tasche Ø${derivedPocketDiameter}`,
+      geometryEntityIds: ["derived-center-pocket"],
+      depthMm: bossHeight,
+      side: "inside",
+      confidence: 0.74
+    });
   }
   if (center && derivedThroughDiameter && !entities.some((entity) => entity.id === "derived-center-drill")) {
     entities.push({ id: "derived-center-drill", type: "circle", layer: "derived-drill", center, radius: derivedThroughDiameter / 2 });
-      features.push({
-        id: "derived-center-drill",
-        type: "drill",
-        label: `Zentral Bohrung Ø${derivedThroughDiameter}`,
-        geometryEntityIds: ["derived-center-drill"],
-        center,
-        diameterMm: derivedThroughDiameter,
-        depthMm: totalHeight ?? thickness,
-        confidence: 0.74
-      });
+    removeSimilarFeatures(features, "center-drill");
+    features.push({
+      id: "derived-center-drill",
+      type: "drill",
+      label: `Zentral Bohrung Ø${derivedThroughDiameter}`,
+      geometryEntityIds: ["derived-center-drill"],
+      center,
+      diameterMm: derivedThroughDiameter,
+      depthMm: totalHeight ?? thickness,
+      confidence: 0.74
+    });
   }
 }
 
@@ -370,12 +422,12 @@ function readDimensionHints(text: string): {
       continue;
     }
 
-    if (/\b(?:zentraler durchmesser|senkung|tasche|pocket)\b/.test(line)) {
+    if (/\b(?:zentraler durchmesser|senkung|tasche|pocket|counterbore)\b/.test(line)) {
       centralPocketDiameter = Math.max(...diameters);
       continue;
     }
 
-    if (/\b(?:zentrale bohrung|zentralbohrung|durchgang)\b/.test(line) && !/\b(?:widerspruch|widerspruchliche|annahme)\b/.test(line)) {
+    if (/\b(?:zentrale bohrung|zentralbohrung|durchgang|through-hole|through hole|central hole|center hole)\b/.test(line) && !/\b(?:widerspruch|widerspruchliche|annahme)\b/.test(line)) {
       centralDrillDiameter = Math.min(...diameters);
       continue;
     }
@@ -395,6 +447,21 @@ function readDimensionHints(text: string): {
   }
 
   return { mountingHoleDiameter, bossDiameter, centralPocketDiameter, centralDrillDiameter };
+}
+
+function removeSimilarFeatures(features: MachiningFeature[], category: "outer" | "mounting-holes" | "boss-profile" | "center-pocket" | "center-drill"): void {
+  for (let index = features.length - 1; index >= 0; index -= 1) {
+    const feature = features[index];
+    if (feature.id.startsWith("derived-")) continue;
+    const text = `${feature.id} ${feature.label}`.toLowerCase();
+    const matches =
+      (category === "outer" && /\b(?:outer|aussen|außen|kontur|profile)\b/.test(text) && feature.type === "profile") ||
+      (category === "mounting-holes" && feature.type === "drill" && /\b(?:corner|eck|4x|bohrung|hole)\b/.test(text)) ||
+      (category === "boss-profile" && /\b(?:boss|aufsatz|absatz|nabe)\b/.test(text)) ||
+      (category === "center-pocket" && feature.type === "pocket" && /\b(?:central|center|zentral|counterbore|tasche|pocket|senkung)\b/.test(text)) ||
+      (category === "center-drill" && feature.type === "drill" && /\b(?:central|center|zentral|through|durchgang)\b/.test(text));
+    if (matches) features.splice(index, 1);
+  }
 }
 
 function hasUsableGeometry(feature: MachiningFeature, entities: GeometryEntity[]): boolean {

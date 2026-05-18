@@ -60,9 +60,14 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
 
   const hasPath = featureEntities.some((entity) => entityStartPoint(entity) !== null);
   if (!hasPath) warnings.push("Keine Werkzeugpfadpunkte erzeugt.");
-  if (feature.type !== "engrave" && featureEntities.some((entity) => !isClosedEntity(entity))) {
+  if (feature.type !== "engrave" && hasOpenGeometry(featureEntities)) {
     warnings.push("Profil/Tasche enthält offene Geometrie.");
   }
+
+  const buildMoves =
+    feature.type === "pocket"
+      ? (zMm: number) => pocketEntitiesToMoves(featureEntities, -zMm, params)
+      : (zMm: number) => entitiesToMoves(featureEntities, -zMm, params);
 
   return {
     id: `op-${feature.id}`,
@@ -72,7 +77,7 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
     warnings,
     passes: passDepths.map((zMm) => ({
       zMm,
-      moves: entitiesToMoves(featureEntities, -zMm, params)
+      moves: buildMoves(zMm)
     }))
   };
 }
@@ -96,6 +101,87 @@ function pointsToMoves(points: Point2[], z: number, params: CamParameters): Tool
   ];
 }
 
+function pocketEntitiesToMoves(entities: GeometryEntity[], z: number, params: CamParameters): ToolpathMove[] {
+  const circles = entities.filter((entity): entity is Extract<GeometryEntity, { type: "circle" }> => entity.type === "circle");
+  const boundaryEntities = entities.filter((entity) => entity.type !== "circle");
+  if (entities.length === 1 && circles.length === 1) return circularPocketMoves(circles[0], z, params);
+  if (circles.length && boundaryEntities.length) return islandPocketMoves(boundaryEntities, circles[0], z, params);
+  return entitiesToMoves(entities, z, params);
+}
+
+function circularPocketMoves(circle: Extract<GeometryEntity, { type: "circle" }>, z: number, params: CamParameters): ToolpathMove[] {
+  const toolRadius = params.toolDiameterMm / 2;
+  const maxPathRadius = circle.radius - toolRadius;
+  if (maxPathRadius <= 0) {
+    return [
+      { kind: "rapid", to: { ...circle.center, z: params.safeZMm } },
+      { kind: "linear", to: { ...circle.center, z }, feedMmMin: params.plungeRateMmMin },
+      { kind: "rapid", to: { ...circle.center, z: params.safeZMm } }
+    ];
+  }
+
+  const stepOver = Math.max(0.2, params.toolDiameterMm * 0.65);
+  const radii = buildPocketRadii(maxPathRadius, stepOver);
+  const moves: ToolpathMove[] = [
+    { kind: "rapid", to: { ...circle.center, z: params.safeZMm } },
+    { kind: "linear", to: { ...circle.center, z }, feedMmMin: params.plungeRateMmMin }
+  ];
+
+  for (const radius of radii) {
+    const start = { x: circle.center.x + radius, y: circle.center.y };
+    const opposite = { x: circle.center.x - radius, y: circle.center.y };
+    moves.push({ kind: "linear", to: { ...start, z }, feedMmMin: params.feedRateMmMin });
+    moves.push({ kind: "arc", to: { ...opposite, z }, centerOffset: { x: -radius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin });
+    moves.push({ kind: "arc", to: { ...start, z }, centerOffset: { x: radius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin });
+  }
+
+  const lastRadius = radii.at(-1) ?? 0;
+  moves.push({ kind: "rapid", to: { x: circle.center.x + lastRadius, y: circle.center.y, z: params.safeZMm } });
+  return moves;
+}
+
+function islandPocketMoves(
+  boundaryEntities: GeometryEntity[],
+  island: Extract<GeometryEntity, { type: "circle" }>,
+  z: number,
+  params: CamParameters
+): ToolpathMove[] {
+  const bounds = boundsFromEntities(boundaryEntities);
+  if (!bounds) return entitiesToMoves([island], z, params);
+
+  const toolRadius = params.toolDiameterMm / 2;
+  const stepOver = Math.max(0.2, params.toolDiameterMm * 0.65);
+  const cornerRadius = Math.max(0, ...boundaryEntities.filter((entity) => entity.type === "arc").map((entity) => entity.radius));
+  const islandClearance = island.radius + toolRadius;
+  const moves: ToolpathMove[] = [];
+  let row = 0;
+
+  for (let y = bounds.minY + toolRadius; y <= bounds.maxY - toolRadius + 0.001; y += stepOver) {
+    const outerRange = roundedRectXRangeAtY(y, bounds, cornerRadius, toolRadius);
+    if (!outerRange) continue;
+
+    const ranges = subtractCircleIsland(outerRange, y, island.center, islandClearance).filter((range) => range.end - range.start > params.toolDiameterMm);
+    for (const range of ranges) {
+      const startX = row % 2 === 0 ? range.start : range.end;
+      const endX = row % 2 === 0 ? range.end : range.start;
+      moves.push({ kind: "rapid", to: { x: startX, y, z: params.safeZMm } });
+      moves.push({ kind: "linear", to: { x: startX, y, z }, feedMmMin: params.plungeRateMmMin });
+      moves.push({ kind: "linear", to: { x: endX, y, z }, feedMmMin: params.feedRateMmMin });
+      moves.push({ kind: "rapid", to: { x: endX, y, z: params.safeZMm } });
+      row += 1;
+    }
+  }
+
+  return moves.length ? moves : entitiesToMoves([island], z, params);
+}
+
+function buildPocketRadii(maxPathRadius: number, stepOver: number): number[] {
+  const radii: number[] = [];
+  for (let radius = Math.min(stepOver, maxPathRadius); radius < maxPathRadius; radius += stepOver) radii.push(round(radius));
+  radii.push(round(maxPathRadius));
+  return Array.from(new Set(radii));
+}
+
 function entitiesToMoves(entities: GeometryEntity[], z: number, params: CamParameters): ToolpathMove[] {
   const moves: ToolpathMove[] = [];
   let current: Point2 | null = null;
@@ -114,6 +200,41 @@ function entitiesToMoves(entities: GeometryEntity[], z: number, params: CamParam
 
   if (current) moves.push({ kind: "rapid", to: { ...current, z: params.safeZMm } });
   return moves;
+}
+
+function hasOpenGeometry(entities: GeometryEntity[]): boolean {
+  let pathStart: Point2 | null = null;
+  let current: Point2 | null = null;
+
+  for (const entity of entities) {
+    if (isClosedEntity(entity)) continue;
+    const start = entityStartPoint(entity);
+    const end = entityEndPoint(entity);
+    if (!start) continue;
+
+    if (!current) {
+      pathStart = start;
+      current = end;
+      continue;
+    }
+
+    if (!pointsAlmostEqual(current, start)) {
+      if (pathStart && pointsAlmostEqual(current, pathStart)) {
+        pathStart = start;
+        current = end;
+        continue;
+      }
+      return true;
+    }
+
+    current = end;
+    if (pathStart && pointsAlmostEqual(current, pathStart)) {
+      pathStart = null;
+      current = null;
+    }
+  }
+
+  return current !== null && !(pathStart && pointsAlmostEqual(current, pathStart));
 }
 
 function entityCutMoves(entity: GeometryEntity, z: number, params: CamParameters): ToolpathMove[] {
@@ -202,6 +323,54 @@ function buildHelixDrillMoves(
   ];
 }
 
+function boundsFromEntities(entities: GeometryEntity[]): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  const points = entities.flatMap((entity) => discretizeEntity(entity));
+  if (!points.length) return null;
+  return {
+    minX: Math.min(...points.map((point) => point.x)),
+    minY: Math.min(...points.map((point) => point.y)),
+    maxX: Math.max(...points.map((point) => point.x)),
+    maxY: Math.max(...points.map((point) => point.y))
+  };
+}
+
+function roundedRectXRangeAtY(
+  y: number,
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  cornerRadius: number,
+  toolRadius: number
+): { start: number; end: number } | null {
+  let start = bounds.minX + toolRadius;
+  let end = bounds.maxX - toolRadius;
+  const r = Math.max(0, cornerRadius - toolRadius);
+
+  if (r > 0 && y < bounds.minY + cornerRadius) {
+    const dy = y - (bounds.minY + cornerRadius);
+    const inset = cornerRadius - Math.sqrt(Math.max(0, r * r - dy * dy));
+    start = bounds.minX + inset + toolRadius;
+    end = bounds.maxX - inset - toolRadius;
+  } else if (r > 0 && y > bounds.maxY - cornerRadius) {
+    const dy = y - (bounds.maxY - cornerRadius);
+    const inset = cornerRadius - Math.sqrt(Math.max(0, r * r - dy * dy));
+    start = bounds.minX + inset + toolRadius;
+    end = bounds.maxX - inset - toolRadius;
+  }
+
+  return end > start ? { start: round(start), end: round(end) } : null;
+}
+
+function subtractCircleIsland(range: { start: number; end: number }, y: number, center: Point2, radius: number): { start: number; end: number }[] {
+  const dy = y - center.y;
+  if (Math.abs(dy) >= radius) return [range];
+  const dx = Math.sqrt(radius * radius - dy * dy);
+  const cutStart = center.x - dx;
+  const cutEnd = center.x + dx;
+  const ranges: { start: number; end: number }[] = [];
+  if (cutStart > range.start) ranges.push({ start: range.start, end: Math.min(cutStart, range.end) });
+  if (cutEnd < range.end) ranges.push({ start: Math.max(cutEnd, range.start), end: range.end });
+  return ranges.map((item) => ({ start: round(item.start), end: round(item.end) }));
+}
+
 function operationToGCode(operation: ToolpathOperation, params: CamParameters): string[] {
   return [
     "",
@@ -224,12 +393,13 @@ function moveToGCode(move: ToolpathMove, params: CamParameters): string {
 
 function validateForMachining(analysis: DrawingAnalysis, params: CamParameters, operations: ToolpathOperation[]): string[] {
   const warnings = [...analysis.warnings, ...operations.flatMap((operation) => operation.warnings)];
+  const maxDepth = Math.max(params.cutDepthMm, ...operations.map((operation) => operation.depthMm));
   if (analysis.units === "unknown") warnings.push("Einheiten unbekannt: G-Code wird als Millimeter ausgegeben.");
   if (params.toolDiameterMm <= 0) warnings.push("Werkzeugdurchmesser muss positiv sein.");
   if (params.cutDepthMm <= 0) warnings.push("Schnitttiefe muss positiv sein.");
-  if (params.stepDownMm > params.cutDepthMm) warnings.push("Zustellung ist größer als Schnitttiefe.");
+  if (params.stepDownMm > maxDepth) warnings.push("Zustellung ist größer als Schnitttiefe.");
   if (params.feedRateMmMin <= 0 || params.plungeRateMmMin <= 0) warnings.push("Vorschubwerte müssen positiv sein.");
-  if (params.stockThicknessMm < params.cutDepthMm) warnings.push("Schnitttiefe überschreitet Materialstärke.");
+  if (params.stockThicknessMm < maxDepth) warnings.push("Schnitttiefe überschreitet Materialstärke.");
   return Array.from(new Set(warnings));
 }
 
