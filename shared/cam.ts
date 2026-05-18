@@ -33,20 +33,28 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
   const passDepths = buildPassDepths(depth, params.stepDownMm);
 
   if (feature.type === "drill") {
+    const holeRadius = Math.max(0.1, feature.diameterMm / 2);
+    const toolRadius = Math.max(0.1, params.toolDiameterMm / 2);
+    const useHelix = holeRadius > toolRadius * 1.05;
     return {
       id: `op-${feature.id}`,
       type: "drill",
       label: feature.label,
       depthMm: depth,
       warnings,
-      passes: passDepths.map((zMm) => ({
-        zMm,
-        moves: [
-          { kind: "rapid", to: { x: feature.center.x, y: feature.center.y, z: params.safeZMm } },
-          { kind: "linear", to: { x: feature.center.x, y: feature.center.y, z: -zMm }, feedMmMin: params.plungeRateMmMin },
-          { kind: "rapid", to: { x: feature.center.x, y: feature.center.y, z: params.safeZMm } }
-        ]
-      }))
+      passes: passDepths.map((zMm, index) => {
+        const prevDepth = index === 0 ? 0 : passDepths[index - 1];
+        return {
+          zMm,
+          moves: useHelix
+            ? buildHelixDrillMoves(feature.center, holeRadius, toolRadius, prevDepth, zMm, params)
+            : [
+                { kind: "rapid", to: { x: feature.center.x, y: feature.center.y, z: params.safeZMm } },
+                { kind: "linear", to: { x: feature.center.x, y: feature.center.y, z: -zMm }, feedMmMin: params.plungeRateMmMin },
+                { kind: "rapid", to: { x: feature.center.x, y: feature.center.y, z: params.safeZMm } }
+              ]
+        };
+      })
     };
   }
 
@@ -121,12 +129,13 @@ function entityCutMoves(entity: GeometryEntity, z: number, params: CamParameters
   if (entity.type === "arc") {
     const start = arcPoint(entity, entity.startAngleDeg);
     const end = arcPoint(entity, entity.endAngleDeg);
+    const clockwise = isArcClockwise(entity);
     return [
       {
         kind: "arc",
         to: { ...end, z },
         centerOffset: { x: entity.center.x - start.x, y: entity.center.y - start.y },
-        clockwise: false,
+        clockwise,
         feedMmMin: params.feedRateMmMin
       }
     ];
@@ -156,6 +165,41 @@ function arcPoint(entity: Extract<GeometryEntity, { type: "arc" }>, angleDeg: nu
     x: entity.center.x + Math.cos(angle) * entity.radius,
     y: entity.center.y + Math.sin(angle) * entity.radius
   };
+}
+
+function isArcClockwise(entity: Extract<GeometryEntity, { type: "arc" }>): boolean {
+  const delta = normalizeSignedAngle(entity.endAngleDeg - entity.startAngleDeg);
+  return delta < 0;
+}
+
+function normalizeSignedAngle(angleDeg: number): number {
+  let normalized = angleDeg % 360;
+  if (normalized > 180) normalized -= 360;
+  if (normalized <= -180) normalized += 360;
+  return normalized;
+}
+
+function buildHelixDrillMoves(
+  center: Point2,
+  holeRadius: number,
+  toolRadius: number,
+  prevDepth: number,
+  nextDepth: number,
+  params: CamParameters
+): ToolpathMove[] {
+  const pathRadius = Math.max(0.1, holeRadius - toolRadius);
+  const start = { x: center.x + pathRadius, y: center.y };
+  const prevZ = -prevDepth;
+  const targetZ = -nextDepth;
+  const midZ = prevZ + (targetZ - prevZ) / 2;
+
+  return [
+    { kind: "rapid", to: { ...start, z: params.safeZMm } },
+    { kind: "linear", to: { ...start, z: prevZ }, feedMmMin: params.plungeRateMmMin },
+    { kind: "arc", to: { x: center.x - pathRadius, y: center.y, z: midZ }, centerOffset: { x: -pathRadius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin },
+    { kind: "arc", to: { ...start, z: targetZ }, centerOffset: { x: pathRadius, y: 0 }, clockwise: true, feedMmMin: params.feedRateMmMin },
+    { kind: "rapid", to: { ...start, z: params.safeZMm } }
+  ];
 }
 
 function operationToGCode(operation: ToolpathOperation, params: CamParameters): string[] {

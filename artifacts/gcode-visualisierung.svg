@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <style>
+      .bg { fill: #0f172a; }
+      .panel { fill: #111827; stroke: #334155; stroke-width: 2; }
+      .title { fill: #e2e8f0; font: 700 30px Arial, sans-serif; }
+      .subtitle { fill: #94a3b8; font: 500 18px Arial, sans-serif; }
+      .label { fill: #cbd5e1; font: 500 16px Arial, sans-serif; }
+      .small { fill: #94a3b8; font: 500 14px Arial, sans-serif; }
+      .axis { stroke: #475569; stroke-width: 1.5; }
+      .grid { stroke: #1f2937; stroke-width: 1; }
+      .outer { stroke: #f97316; stroke-width: 4; fill: none; }
+      .boss { stroke: #22d3ee; stroke-width: 4; fill: none; }
+      .drill-point { fill: #f43f5e; stroke: #fecdd3; stroke-width: 1.5; }
+      .bar-outer { fill: #fb923c; }
+      .bar-drill { fill: #f43f5e; }
+      .bar-boss { fill: #22d3ee; }
+      .warn { fill: #fbbf24; font: 600 14px Arial, sans-serif; }
+      .legend-box { fill: #0b1220; stroke: #334155; stroke-width: 1.5; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1400" height="900"/>
+
+  <text x="40" y="50" class="title">G-Code Visualisierung (Top View + Z-Tiefe)</text>
+  <text x="40" y="82" class="subtitle">Quelle: Export aus KI CNC Zeichnungsanalyse MVP (Bildschirmfoto 2026-05-17)</text>
+
+  <rect class="panel" x="40" y="110" width="860" height="740" rx="8"/>
+  <rect class="panel" x="930" y="110" width="430" height="740" rx="8"/>
+
+  <text x="70" y="150" class="label">Top View Werkzeugwege (XY)</text>
+  <text x="960" y="150" class="label">Z-Tiefen pro Operation</text>
+
+  <!-- Top view plotting area -->
+  <g transform="translate(120,210)">
+    <rect x="0" y="0" width="700" height="620" fill="#0b1220" stroke="#1e293b" stroke-width="1.5"/>
+
+    <!-- Grid -->
+    <g>
+      <line class="grid" x1="0" y1="0" x2="0" y2="620"/>
+      <line class="grid" x1="116.67" y1="0" x2="116.67" y2="620"/>
+      <line class="grid" x1="233.33" y1="0" x2="233.33" y2="620"/>
+      <line class="grid" x1="350" y1="0" x2="350" y2="620"/>
+      <line class="grid" x1="466.67" y1="0" x2="466.67" y2="620"/>
+      <line class="grid" x1="583.33" y1="0" x2="583.33" y2="620"/>
+      <line class="grid" x1="700" y1="0" x2="700" y2="620"/>
+      <line class="grid" x1="0" y1="0" x2="700" y2="0"/>
+      <line class="grid" x1="0" y1="103.33" x2="700" y2="103.33"/>
+      <line class="grid" x1="0" y1="206.67" x2="700" y2="206.67"/>
+      <line class="grid" x1="0" y1="310" x2="700" y2="310"/>
+      <line class="grid" x1="0" y1="413.33" x2="700" y2="413.33"/>
+      <line class="grid" x1="0" y1="516.67" x2="700" y2="516.67"/>
+      <line class="grid" x1="0" y1="620" x2="700" y2="620"/>
+    </g>
+
+    <!-- Axis labels -->
+    <text x="10" y="-12" class="small">Maßstab: 1 mm = 4 px</text>
+    <text x="620" y="605" class="small">X</text>
+    <text x="8" y="20" class="small">Y</text>
+
+    <!-- Part coordinates mapped: x'=110 + x*4, y'=560 - y*4 -->
+    <!-- Outer contour 120x120 R20 -->
+    <path class="outer" d="M 190 560
+      L 510 560
+      A 80 80 0 0 0 590 480
+      L 590 160
+      A 80 80 0 0 0 510 80
+      L 190 80
+      A 80 80 0 0 0 110 160
+      L 110 480
+      A 80 80 0 0 0 190 560"/>
+
+    <!-- Boss toolpath as full circle (Ø60, r=30) centered at 60/60 -->
+    <circle class="boss" cx="350" cy="320" r="120"/>
+
+    <!-- Drill plunges: corner holes + center -->
+    <g>
+      <circle class="drill-point" cx="190" cy="480" r="8"/>
+      <circle class="drill-point" cx="510" cy="480" r="8"/>
+      <circle class="drill-point" cx="510" cy="160" r="8"/>
+      <circle class="drill-point" cx="190" cy="160" r="8"/>
+      <circle class="drill-point" cx="350" cy="320" r="9"/>
+    </g>
+
+    <text x="122" y="592" class="small">0,0</text>
+    <text x="506" y="592" class="small">120,0</text>
+    <text x="500" y="72" class="small">120,120</text>
+    <text x="122" y="72" class="small">0,120</text>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(500,130)">
+    <rect class="legend-box" x="0" y="0" width="370" height="110" rx="6"/>
+    <line x1="16" y1="28" x2="70" y2="28" class="outer"/>
+    <text x="82" y="34" class="small">Aussenkontur (G3-Ecken), Z bis -20</text>
+    <line x1="16" y1="56" x2="70" y2="56" class="boss"/>
+    <text x="82" y="62" class="small">Aufsatz-Operation Ø60, Z bis -55</text>
+    <circle cx="43" cy="84" r="7" class="drill-point"/>
+    <text x="82" y="90" class="small">Bohrungen als reine Plunge-Punkte</text>
+  </g>
+
+  <!-- Depth bars -->
+  <g transform="translate(965,210)">
+    <rect x="0" y="0" width="360" height="620" fill="#0b1220" stroke="#1e293b" stroke-width="1.5"/>
+    <line class="axis" x1="80" y1="40" x2="80" y2="580"/>
+    <text x="40" y="34" class="small">Z=0</text>
+    <text x="25" y="584" class="small">Z=-75</text>
+    <line class="grid" x1="70" y1="40" x2="340" y2="40"/>
+    <line class="grid" x1="70" y1="184" x2="340" y2="184"/>
+    <line class="grid" x1="70" y1="328" x2="340" y2="328"/>
+    <line class="grid" x1="70" y1="472" x2="340" y2="472"/>
+    <line class="grid" x1="70" y1="580" x2="340" y2="580"/>
+    <text x="42" y="188" class="small">-20</text>
+    <text x="42" y="436" class="small">-55</text>
+
+    <!-- scale: 540px for 75mm => 7.2 px/mm -->
+    <rect class="bar-outer" x="110" y="40" width="55" height="144"/>
+    <text x="105" y="205" class="small">Aussen</text>
+
+    <rect class="bar-drill" x="190" y="40" width="55" height="144"/>
+    <text x="188" y="205" class="small">4x Ø20</text>
+
+    <rect class="bar-boss" x="270" y="40" width="55" height="396"/>
+    <text x="268" y="457" class="small">Ø60 Op</text>
+
+    <rect class="bar-drill" x="110" y="40" width="215" height="540" fill-opacity="0.16"/>
+    <rect class="bar-drill" x="270" y="40" width="55" height="540" fill-opacity="0"/>
+    <rect class="bar-drill" x="190" y="40" width="55" height="540" fill-opacity="0"/>
+    <rect class="bar-drill" x="110" y="40" width="55" height="540" fill-opacity="0"/>
+
+    <rect class="bar-drill" x="145" y="40" width="55" height="540"/>
+    <text x="140" y="603" class="small">Zentral</text>
+    <text x="145" y="621" class="small">Ø20 bis -75</text>
+  </g>
+
+  <text x="960" y="770" class="warn">Hinweis: Bohrungen sind im G-Code aktuell nur als Z-Plunge (kein Kreisinterpolieren/Helix).</text>
+  <text x="960" y="795" class="warn">Hinweis: Ø60-Operation fräst tiefe Ringbahn; das erzeugt keinen "stehenden" Aufsatz.</text>
+</svg>
