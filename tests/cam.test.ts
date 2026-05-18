@@ -50,7 +50,7 @@ describe("CAM generation", () => {
     const params = { ...defaultCamParameters, cutDepthMm: 2, stepDownMm: 1 };
     const toolpaths = buildToolpaths(analysis, params);
     const gcode = generateGCode(analysis, params, toolpaths);
-    expect(toolpaths[0].passes).toHaveLength(2);
+    expect(toolpaths[0].passes).toHaveLength(3);
     expect(gcode.text).toContain("G21");
     expect(gcode.text).toContain("(Operation: Geschlossene Kontur)");
     expect(gcode.text).toContain("M30");

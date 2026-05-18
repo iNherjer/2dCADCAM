@@ -15,7 +15,9 @@ describe("BYOK AI normalization", () => {
           "Eckenradius R20",
           "4x Bohrung Ø20",
           "Aufsatz Ø60",
-          "Zentralbohrung Ø35"
+          "Zentraler Durchmesser Ø35",
+          "Zentrale Bohrung Ø20",
+          "Gesamthöhe 75"
         ],
         entities: [],
         features: [
@@ -30,12 +32,23 @@ describe("BYOK AI normalization", () => {
     );
 
     expect(analysis.entities.map((entity) => entity.id)).toEqual(
-      expect.arrayContaining(["derived-outer", "derived-hole-1", "derived-hole-2", "derived-hole-3", "derived-hole-4", "derived-boss", "derived-center"])
+      expect.arrayContaining([
+        "derived-outer",
+        "derived-hole-1",
+        "derived-hole-2",
+        "derived-hole-3",
+        "derived-hole-4",
+        "derived-boss",
+        "derived-center-pocket",
+        "derived-center-drill"
+      ])
     );
     expect(analysis.features.map((feature) => feature.id)).toEqual(
-      expect.arrayContaining(["derived-outer-profile", "derived-hole-1-drill", "derived-boss-profile", "derived-center-pocket"])
+      expect.arrayContaining(["derived-outer-profile", "derived-hole-1-drill", "derived-boss-profile", "derived-center-pocket", "derived-center-drill"])
     );
     expect(analysis.features.every((feature) => feature.geometryEntityIds.length > 0)).toBe(true);
+    expect(analysis.features.find((feature) => feature.id === "derived-center-pocket")?.depthMm).toBe(55);
+    expect(analysis.features.find((feature) => feature.id === "derived-center-drill")?.depthMm).toBe(75);
 
     const toolpaths = buildToolpaths(analysis, { ...defaultCamParameters, cutDepthMm: 1, stepDownMm: 1 });
     const gcode = generateGCode(analysis, defaultCamParameters, toolpaths);

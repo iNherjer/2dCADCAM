@@ -249,7 +249,9 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
   const normalized = normalizeDimensionText(text);
   const plate = readPlateSize(normalized);
   const cornerRadius = readRadiusNear(normalized, ["eckenradius", "corner", "aussen"]);
-  const thickness = readNumberNear(normalized, ["flanschdicke", "platte", "dicke"]) ?? 1;
+  const totalHeight = readNumberNear(normalized, ["gesamthohe", "gesamt hohe", "total height"]);
+  const thickness = readNumberNear(normalized, ["flanschdicke", "flanschhohe", "grundplatte", "platte", "dicke"]) ?? 1;
+  const bossHeight = totalHeight && thickness ? Math.max(0.1, totalHeight - thickness) : thickness;
   const center = plate ? { x: plate.width / 2, y: plate.height / 2 } : undefined;
 
   if (plate && !entities.some((entity) => entity.id === "derived-outer")) {
@@ -304,37 +306,39 @@ function addDimensionDerivedGeometry(text: string, entities: GeometryEntity[], f
       type: "profile",
       label: `Aufsatz Ø${bossDiameter}`,
       geometryEntityIds: ["derived-boss"],
-      depthMm: thickness,
+      depthMm: bossHeight,
       side: "outside",
       confidence: 0.72
     });
   }
 
-  const centralDiameter = readDiameterNear(normalized, ["zentralbohrung", "zentral", "center", "mitte"]);
-  if (center && centralDiameter && !entities.some((entity) => entity.id === "derived-center")) {
-    entities.push({ id: "derived-center", type: "circle", layer: "derived-pocket", center, radius: centralDiameter / 2 });
-    if (centralDiameter >= 25) {
+  const centralDiameters = readDiametersNear(normalized, ["zentralbohrung", "zentrale bohrung", "zentraler durchmesser", "zentral", "center", "mitte"]);
+  const pocketDiameter = centralDiameters.filter((diameter) => diameter >= 25).sort((a, b) => b - a)[0];
+  const throughDiameter = centralDiameters.filter((diameter) => !pocketDiameter || diameter < pocketDiameter).sort((a, b) => a - b)[0];
+  if (center && pocketDiameter && !entities.some((entity) => entity.id === "derived-center-pocket")) {
+    entities.push({ id: "derived-center-pocket", type: "circle", layer: "derived-pocket", center, radius: pocketDiameter / 2 });
       features.push({
         id: "derived-center-pocket",
         type: "pocket",
-        label: `Zentral Tasche Ø${centralDiameter}`,
-        geometryEntityIds: ["derived-center"],
-        depthMm: Math.min(thickness, 1),
+        label: `Zentral Tasche Ø${pocketDiameter}`,
+        geometryEntityIds: ["derived-center-pocket"],
+        depthMm: bossHeight,
         side: "inside",
         confidence: 0.74
       });
-    } else {
+  }
+  if (center && throughDiameter && !entities.some((entity) => entity.id === "derived-center-drill")) {
+    entities.push({ id: "derived-center-drill", type: "circle", layer: "derived-drill", center, radius: throughDiameter / 2 });
       features.push({
         id: "derived-center-drill",
         type: "drill",
-        label: `Zentral Bohrung Ø${centralDiameter}`,
-        geometryEntityIds: ["derived-center"],
+        label: `Zentral Bohrung Ø${throughDiameter}`,
+        geometryEntityIds: ["derived-center-drill"],
         center,
-        diameterMm: centralDiameter,
-        depthMm: thickness,
+        diameterMm: throughDiameter,
+        depthMm: totalHeight ?? thickness,
         confidence: 0.74
       });
-    }
   }
 }
 
@@ -362,20 +366,25 @@ function readPlateSize(text: string): { width: number; height: number } | null {
 }
 
 function readPatternDiameter(text: string, labelPattern: RegExp): number | null {
-  const match = text.match(new RegExp(`${labelPattern.source}[^d0-9]{0,24}d\\s*(\\d+(?:\\.\\d+)?)`));
+  const match = text.match(new RegExp(`${labelPattern.source}[^|]{0,40}d\\s*(\\d+(?:\\.\\d+)?)`));
   if (match) return Number(match[1]);
-  const reversed = text.match(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,24}${labelPattern.source}`));
+  const reversed = text.match(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,40}${labelPattern.source}`));
   return reversed ? Number(reversed[1]) : null;
 }
 
 function readDiameterNear(text: string, labels: string[]): number | null {
+  return readDiametersNear(text, labels)[0] ?? null;
+}
+
+function readDiametersNear(text: string, labels: string[]): number[] {
+  const diameters: number[] = [];
   for (const label of labels) {
-    const after = text.match(new RegExp(`${label}[^d0-9]{0,24}d\\s*(\\d+(?:\\.\\d+)?)`));
-    if (after) return Number(after[1]);
-    const before = text.match(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,24}${label}`));
-    if (before) return Number(before[1]);
+    const afterMatches = text.matchAll(new RegExp(`${label}[^|]{0,40}d\\s*(\\d+(?:\\.\\d+)?)`, "g"));
+    for (const match of afterMatches) diameters.push(Number(match[1]));
+    const beforeMatches = text.matchAll(new RegExp(`d\\s*(\\d+(?:\\.\\d+)?)[^|]{0,40}${label}`, "g"));
+    for (const match of beforeMatches) diameters.push(Number(match[1]));
   }
-  return null;
+  return Array.from(new Set(diameters.filter((diameter) => diameter > 0)));
 }
 
 function readRadiusNear(text: string, labels: string[]): number | null {

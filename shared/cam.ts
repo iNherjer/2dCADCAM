@@ -29,7 +29,7 @@ function buildOperation(feature: MachiningFeature, entities: GeometryEntity[], p
   const warnings: string[] = [];
   if (featureEntities.length === 0) warnings.push("Feature verweist auf keine vorhandene Geometrie.");
 
-  const depth = Math.min(Math.abs(feature.depthMm), Math.abs(params.cutDepthMm || feature.depthMm));
+  const depth = Math.abs(feature.depthMm || params.cutDepthMm);
   const passDepths = buildPassDepths(depth, params.stepDownMm);
 
   if (feature.type === "drill") {

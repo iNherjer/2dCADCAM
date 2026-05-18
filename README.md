@@ -61,6 +61,8 @@ Im BYOK-Direktmodus geht der Key nicht an unser Backend, sondern direkt aus dem 
 
 Für bemaßte Screenshots ist `gemini-2.5-pro` der empfohlene Gemini-Default. `gemini-2.5-flash` ist schneller und günstiger, übersieht aber bei technischen Zeichnungen eher Feature-Zusammenhänge.
 
+Die Maßableitung nutzt erkannte Höhen: Bei einer Gesamthöhe von 75 mm und einer Grundplatten-/Flanschhöhe von 20 mm wird eine zentrale Ø35-Senkung/Tasche bis zur Grundplattenoberfläche als 55 mm tief abgeleitet.
+
 ## MVP-Fähigkeiten
 
 - Drag-and-drop für DXF, PDF, PNG und JPG
